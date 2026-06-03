@@ -88,9 +88,58 @@ class ProductSerializer(serializers.ModelSerializer):
         return representation
 
 class InventorySerializer(serializers.ModelSerializer):
+    productName = serializers.SerializerMethodField()
+    productSku = serializers.SerializerMethodField()
+    costPrice = serializers.SerializerMethodField()
+    salePrice = serializers.SerializerMethodField()
+    supplierName = serializers.SerializerMethodField()
+    productImage = serializers.SerializerMethodField()
+
     class Meta:
         model = Inventory
-        fields = ['inventoryId', 'product', 'quantity', 'reorderLevel', 'location', 'updatedAt']
+        fields = [
+            'inventoryId', 
+            'product', 
+            'quantity', 
+            'reorderLevel', 
+            'location', 
+            'updatedAt',
+            'productName',
+            'productSku',
+            'costPrice',
+            'salePrice',
+            'supplierName',
+            'productImage'
+        ]
+
+    def get_productName(self, obj):
+        return obj.product.productName if obj.product else None
+
+    def get_productSku(self, obj):
+        return obj.product.skuCode if obj.product else None
+
+    def get_costPrice(self, obj):
+        return obj.product.costPrice if obj.product else None
+
+    def get_salePrice(self, obj):
+        return obj.product.salePrice if obj.product else None
+
+    def get_supplierName(self, obj):
+        return obj.product.source.name if obj.product and obj.product.source else None
+
+    def get_productImage(self, obj):
+        return obj.product.image if obj.product else None
+
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        
+        # Hide cost price from staff users
+        if request and hasattr(request, 'user') and request.user.is_authenticated:
+            if request.user.role == 'staff':
+                representation.pop('costPrice', None)
+        
+        return representation
 
 class NewStockSerializer(serializers.ModelSerializer):
     productName = serializers.SerializerMethodField()
@@ -196,9 +245,15 @@ class InvoiceSerializer(serializers.ModelSerializer):
         total_discount = Decimal('0.00')
 
         for item_data in line_items_data:
-            subtotal = item_data['pricePerUnit'] * item_data['quantity']
-            total_before_discount += subtotal
-            total_discount += item_data.get('discount', Decimal('0.00'))
+            qty = item_data['quantity']
+            price = item_data['pricePerUnit']
+            pct_discount = item_data.get('discount', Decimal('0.00'))
+            
+            item_subtotal = price * qty
+            item_discount = (item_subtotal * pct_discount) / Decimal('100.00')
+            
+            total_before_discount += item_subtotal
+            total_discount += item_discount
 
         # Get tax percentage from user input (or default to 0.00 if not provided)
         tax_percentage = validated_data.pop('taxPercentage', Decimal('0.00'))
@@ -219,8 +274,13 @@ class InvoiceSerializer(serializers.ModelSerializer):
         # Create purchase line items
         # NOTE: Inventory reduction is handled by the signal in signals.py
         for item_data in line_items_data:
-            subtotal = item_data['pricePerUnit'] * item_data['quantity']
-            subtotal -= item_data.get('discount', Decimal('0.00'))
+            qty = item_data['quantity']
+            price = item_data['pricePerUnit']
+            pct_discount = item_data.get('discount', Decimal('0.00'))
+            
+            item_subtotal = price * qty
+            item_discount = (item_subtotal * pct_discount) / Decimal('100.00')
+            subtotal = item_subtotal - item_discount
 
             Purchase.objects.create(
                 invoice=invoice,

@@ -141,7 +141,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsManagerOrReadOnly] # Managers/Admins can create/edit, Staff can view
 
 class InventoryViewSet(viewsets.ModelViewSet):
-    queryset = Inventory.objects.all()
+    queryset = Inventory.objects.select_related('product', 'product__source').all()
     serializer_class = InventorySerializer
     permission_classes = [IsAuthenticated, IsManagerOrReadOnly] # Managers/Admins can adjust, Staff can view
 

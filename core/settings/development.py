@@ -13,7 +13,7 @@ DEBUG = True
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'vuthserver.tailf87741.ts.net', '100.94.77.119']
 
 # To allow all
-# CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = True
 
 # CORS settings for development
 CORS_ALLOWED_ORIGINS = [

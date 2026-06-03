@@ -101,12 +101,10 @@ class KHQRService:
             logger.info(f"Using merchant_name: {self.merchant_name}")
             logger.info(f"Using merchant_city: {self.merchant_city}")
             
-            # Initialize KHQR instance with token
-            khqr = KHQR(bakong_token=self.bakong_token) if self.bakong_token else KHQR()
+            # Initialize KHQR instance
+            khqr = KHQR()
             
             # Create QR code data (dynamic)
-            # Signature: create_qr(bank_account, merchant_name, merchant_city, amount, currency, 
-            #                      store_label, phone_number, bill_number, terminal_label, static=False)
             qr_data = khqr.create_qr(
                 bank_account=self.bakong_account_id,
                 merchant_name=self.merchant_name,
@@ -116,15 +114,15 @@ class KHQRService:
                 store_label=f"Invoice #{invoice_id}",
                 phone_number="",  # Optional - can be empty string
                 bill_number=str(invoice_id),
-                terminal_label=f"INV{invoice_id}",
-                static=False  # Dynamic QR with specific amount
+                terminal_label=f"INV{invoice_id}"
             )
             
             # The qr_data returned is already a QR string
             qr_string = qr_data if isinstance(qr_data, str) else str(qr_data)
             
             # Calculate MD5 hash
-            md5_hash = khqr.generate_md5(qr_string)
+            import hashlib
+            md5_hash = hashlib.md5(qr_string.encode('utf-8')).hexdigest()
             
             logger.info(f"Generated KHQR QR code for invoice #{invoice_id}, MD5: {md5_hash}")
             
