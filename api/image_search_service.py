@@ -11,7 +11,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Optional
 import time
 import glob
 import atexit
@@ -20,13 +20,14 @@ import sys
 # Configuration
 QDRANT_PATH = os.path.join(settings.BASE_DIR, "qdrant_storage")
 COLLECTION_NAME = "product_images"
-VECTOR_SIZE = 512  # CLIP embedding size
+VECTOR_SIZE = 768  # CLIP embedding size
 
 # Global instances (lazy-initialized)
 _client_instance = None
 _clip_model = None
 _clip_preprocess = None
 _device = None
+_yolo_model = None
 _is_auto_indexing = False  # Guard against recursive auto-indexing
 _skip_auto_index = False   # Used by management command to skip auto-indexing
 
@@ -56,8 +57,105 @@ def _get_clip_model():
     if _clip_model is None:
         import clip
         device = _get_device()
-        _clip_model, _clip_preprocess = clip.load("ViT-B/32", device=device)
+        _clip_model, _clip_preprocess = clip.load("ViT-L/14@336px", device=device)
     return _clip_model, _clip_preprocess
+
+def _get_yolo_model():
+    """Get YOLO model (lazy-initialized and cached)"""
+    global _yolo_model
+    if _yolo_model is None:
+        from ultralytics import YOLO
+        yolo_path = getattr(settings, 'IMAGE_SEARCH_YOLO_MODEL', 'yolo11n.pt')
+        _yolo_model = YOLO(yolo_path)
+    return _yolo_model
+
+def load_pil_image(image_source) -> Image.Image:
+    """Load PIL Image from source, resolve local media path, apply EXIF transpose, convert to RGB"""
+    from PIL import ImageOps
+    
+    if isinstance(image_source, str):
+        # Convert media URL to local path if possible
+        if '/media/' in image_source:
+            media_part = image_source.split('/media/')[-1]
+            local_path = os.path.join(settings.MEDIA_ROOT, media_part)
+            if os.path.exists(local_path):
+                image_source = local_path
+                
+        if image_source.startswith(('http://', 'https://')):
+            response = requests.get(image_source, timeout=10)
+            image = Image.open(io.BytesIO(response.content))
+        elif image_source.startswith('/media/'):
+            # Convert to absolute path
+            media_path = os.path.join(settings.BASE_DIR, '..', 'backend', image_source.lstrip('/'))
+            if not os.path.exists(media_path):
+                media_path = os.path.join(settings.BASE_DIR, image_source.lstrip('/'))
+            image = Image.open(media_path)
+        else:
+            image = Image.open(image_source)
+    elif isinstance(image_source, UploadedFile):
+        image = Image.open(image_source)
+    elif isinstance(image_source, Image.Image):
+        image = image_source
+    else:
+        raise ValueError("Invalid image source type")
+        
+    # Apply EXIF orientation correction
+    image = ImageOps.exif_transpose(image)
+    
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+        
+    return image
+
+def run_yolo_detection(image: Image.Image) -> List[Dict[str, Any]]:
+    """
+    Run YOLO on PIL image and return all detections with bounding boxes.
+    Detections contain: 'bbox' [x1, y1, x2, y2], 'confidence', 'class'.
+    """
+    try:
+        # Convert PIL to BGR numpy array
+        open_cv_image = np.array(image)
+        # Convert RGB to BGR
+        open_cv_image = open_cv_image[:, :, ::-1].copy()
+        
+        yolo_model = _get_yolo_model()
+        results = yolo_model(open_cv_image, conf=0.25, verbose=False)
+        
+        detections = []
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                confidence = float(box.conf[0].cpu().numpy())
+                class_id = int(box.cls[0].cpu().numpy())
+                class_name = result.names[class_id]
+                detections.append({
+                    'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                    'confidence': confidence,
+                    'class': class_name
+                })
+                
+        return detections
+    except Exception as e:
+        print(f"YOLO detection error: {e}")
+    return []
+
+def crop_pil_image(image: Image.Image, bbox: List[int], padding: int = 10) -> Image.Image:
+    """Crop PIL Image based on bounding box with padding"""
+    try:
+        x1, y1, x2, y2 = bbox
+        w, h = image.size
+        
+        # Add padding while keeping within image bounds
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(w, x2 + padding)
+        y2 = min(h, y2 + padding)
+        
+        return image.crop((x1, y1, x2, y2))
+    except Exception as e:
+        print(f"PIL crop error: {e}")
+    return image
 
 def _cleanup_lock_files():
     """Remove lock files that might be blocking Qdrant"""
@@ -98,7 +196,29 @@ def initialize_qdrant(auto_index=True):
         try:
             # Check if collection exists and how many points it has
             collection_info = _client_instance.get_collection(COLLECTION_NAME)
-            points_count = collection_info.points_count if hasattr(collection_info, 'points_count') else 0
+            
+            # Check vector size of existing collection
+            existing_size = 0
+            if hasattr(collection_info, 'config') and hasattr(collection_info.config, 'params') and hasattr(collection_info.config.params, 'vectors'):
+                vectors_config = collection_info.config.params.vectors
+                if hasattr(vectors_config, 'size'):
+                    existing_size = vectors_config.size
+                elif isinstance(vectors_config, dict) and 'size' in vectors_config:
+                    existing_size = vectors_config['size']
+            
+            if existing_size != VECTOR_SIZE:
+                print(f"INFO: Vector size mismatch (existing: {existing_size}, target: {VECTOR_SIZE}). Recreating collection...")
+                from qdrant_client.models import VectorParams, Distance
+                _client_instance.recreate_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config={
+                        "size": VECTOR_SIZE,
+                        "distance": Distance.COSINE
+                    }
+                )
+                points_count = 0
+            else:
+                points_count = collection_info.points_count if hasattr(collection_info, 'points_count') else 0
             
             # If collection is empty, auto-index (unless disabled)
             if auto_index and not _skip_auto_index and points_count == 0 and not _is_auto_indexing:
@@ -113,13 +233,12 @@ def initialize_qdrant(auto_index=True):
             # Collection doesn't exist, create it
             if not _skip_auto_index:
                 print(f"Creating new collection: {str(e)}")
-            from qdrant_client.models import VectorParams, Distance
             _client_instance.recreate_collection(
                 collection_name=COLLECTION_NAME,
-                vectors_config=VectorParams(
-                    size=VECTOR_SIZE,
-                    distance=Distance.COSINE
-                )
+                vectors_config={
+                    "size": VECTOR_SIZE,
+                    "distance": Distance.COSINE
+                }
             )
             # Auto-index after creation if enabled and not already doing so
             if auto_index and not _skip_auto_index and not _is_auto_indexing:
@@ -168,40 +287,7 @@ def get_image_embedding(image_source):
         numpy array of embedding
     """
     try:
-        # Handle different image sources
-        if isinstance(image_source, str):
-            if image_source.startswith(('http://', 'https://')):
-                # Download from URL
-                response = requests.get(image_source, timeout=10)
-                image = Image.open(io.BytesIO(response.content))
-            elif image_source.startswith('/media/'):
-                # Handle relative media paths - convert to absolute file path
-                media_path = os.path.join(settings.BASE_DIR, '..', 'backend', image_source.lstrip('/'))
-                if not os.path.exists(media_path):
-                    # Try alternate path
-                    media_path = os.path.join(settings.BASE_DIR, image_source.lstrip('/'))
-                if os.path.exists(media_path):
-                    image = Image.open(media_path)
-                else:
-                    raise FileNotFoundError(f"Media file not found: {media_path}")
-            else:
-                # Load from file path
-                if os.path.exists(image_source):
-                    image = Image.open(image_source)
-                else:
-                    raise FileNotFoundError(f"Image file not found: {image_source}")
-        elif isinstance(image_source, UploadedFile):
-            # Handle Django uploaded file
-            image = Image.open(image_source)
-        elif isinstance(image_source, Image.Image):
-            # Already a PIL Image
-            image = image_source
-        else:
-            raise ValueError("Invalid image source type")
-        
-        # Convert to RGB if necessary
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
+        image = load_pil_image(image_source)
         
         # Get lazy-loaded CLIP model
         model, preprocess = _get_clip_model()
@@ -274,35 +360,80 @@ def _search_qdrant(client, query_vector, top_k, score_threshold):
         List of ScoredPoint objects with payload
     """
     try:
-        # Use the standard search method available in all Qdrant clients
-        results = client.search(
+        response = client.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=query_vector,
+            query=query_vector,
             limit=top_k,
             score_threshold=score_threshold,
             with_payload=True,
         )
-        return results if results else []
+        return response.points if response and hasattr(response, 'points') else []
         
     except Exception as e:
         print(f"Error searching Qdrant: {str(e)}")
         return []
 
+def _format_search_results(search_points):
+    """Helper to convert Qdrant search points to enriched result dicts"""
+    from api.models import Product
+    results = []
+    
+    for point in search_points:
+        if point.payload is None:
+            payload = {}
+        elif isinstance(point.payload, dict):
+            payload = point.payload
+        elif hasattr(point.payload, '__dict__'):
+            payload = point.payload.__dict__
+        else:
+            payload = {}
+        
+        score = point.score if hasattr(point, 'score') else 0
+        
+        result_data = {
+            "product_id": payload.get("product_id") if isinstance(payload, dict) else None,
+            "product_name": payload.get("product_name") if isinstance(payload, dict) else None,
+            "sku_code": payload.get("sku_code") if isinstance(payload, dict) else None,
+            "image_url": payload.get("image_url") if isinstance(payload, dict) else None,
+            "similarity_score": score,
+        }
+        
+        try:
+            product_id = payload.get("product_id") if isinstance(payload, dict) else None
+            if product_id:
+                product = Product.objects.get(productId=product_id)
+                result_data["sale_price"] = float(product.salePrice)
+                result_data["cost_price"] = float(product.costPrice)
+            else:
+                result_data["sale_price"] = 0.0
+                result_data["cost_price"] = 0.0
+        except Product.DoesNotExist:
+            result_data["sale_price"] = 0.0
+            result_data["cost_price"] = 0.0
+        except Exception as e:
+            product_id = payload.get("product_id") if isinstance(payload, dict) else None
+            if product_id:
+                print(f"Warning: Could not fetch product data for ID {product_id}: {e}")
+            result_data["sale_price"] = 0.0
+            result_data["cost_price"] = 0.0
+        
+        results.append(result_data)
+        
+    return results
+
 def search_similar_images(
     image_source,
     top_k: int = 10,
-    score_threshold: float = 0.5
-) -> List[Dict[str, Any]]:
+    score_threshold: float = 0.5,
+    crop_rect: Optional[Dict[str, int]] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Search for similar products based on image
-    
-    Args:
-        image_source: Image to search by
-        top_k: Number of top results to return
-        score_threshold: Minimum similarity score (0-1)
+    Search for similar products based on image.
+    Supports manual crop rect and automatic YOLO detection.
+    Falls back to full image search if the best crop match score is < 0.68.
     
     Returns:
-        List of matching products with similarity scores
+        Tuple of (results, detections)
     """
     try:
         client = initialize_qdrant()
@@ -313,69 +444,73 @@ def search_similar_images(
             print(f"DEBUG: Collection '{COLLECTION_NAME}' has {collection_info.points_count} points")
         except Exception as e:
             print(f"DEBUG: Error checking collection: {e}")
-        
-        # Get query embedding
-        query_embedding = get_image_embedding(image_source)
-        
-        # Search using adaptive method
-        search_points = _search_qdrant(client, query_embedding.tolist(), top_k, score_threshold)
-        print(f"DEBUG: Search returned {len(search_points) if search_points else 0} results")
-        
-        # Import Product model here to avoid circular imports
-        from api.models import Product
-        
-        # Format results and enrich with product data
-        results = []
-        
-        for point in search_points:
-            # Safely extract payload - it can be dict or None
-            if point.payload is None:
-                payload = {}
-            elif isinstance(point.payload, dict):
-                payload = point.payload
-            elif hasattr(point.payload, '__dict__'):
-                # Convert object to dict if needed
-                payload = point.payload.__dict__
-            else:
-                payload = {}
             
-            # Safely extract score
-            score = point.score if hasattr(point, 'score') else 0
-            
-            result_data = {
-                "product_id": payload.get("product_id") if isinstance(payload, dict) else None,
-                "product_name": payload.get("product_name") if isinstance(payload, dict) else None,
-                "sku_code": payload.get("sku_code") if isinstance(payload, dict) else None,
-                "image_url": payload.get("image_url") if isinstance(payload, dict) else None,
-                "similarity_score": score,
-            }
-            
-            # Try to enrich with product data from database
+        # Load base image (with orientation correction)
+        base_image = load_pil_image(image_source)
+        
+        cropped_image = None
+        yolo_detections = []
+        
+        # 1. Check if crop coords are provided by client (manual crop)
+        if crop_rect is not None:
             try:
-                product_id = payload.get("product_id") if isinstance(payload, dict) else None
-                if product_id:
-                    product = Product.objects.get(productId=product_id)
-                    result_data["sale_price"] = float(product.salePrice)
-                    result_data["cost_price"] = float(product.costPrice)
-                else:
-                    result_data["sale_price"] = 0.0
-                    result_data["cost_price"] = 0.0
-            except Product.DoesNotExist:
-                # If product not in database, use default values
-                result_data["sale_price"] = 0.0
-                result_data["cost_price"] = 0.0
+                x1 = crop_rect.get('x1', 0)
+                y1 = crop_rect.get('y1', 0)
+                x2 = crop_rect.get('x2', base_image.width)
+                y2 = crop_rect.get('y2', base_image.height)
+                cropped_image = base_image.crop((x1, y1, x2, y2))
+                print(f"DEBUG: Using manual crop rect: {x1}, {y1}, {x2}, {y2}")
             except Exception as e:
-                # Log error but don't fail the search
-                product_id = payload.get("product_id") if isinstance(payload, dict) else None
-                if product_id:
-                    print(f"Warning: Could not fetch product data for ID {product_id}: {e}")
-                result_data["sale_price"] = 0.0
-                result_data["cost_price"] = 0.0
-            
-            results.append(result_data)
+                print(f"Error manual cropping: {e}")
+        else:
+            # 2. Run YOLO auto-detection
+            detections = run_yolo_detection(base_image)
+            if detections:
+                # Format detections for response compatibility
+                for d in detections:
+                    yolo_detections.append({
+                        'class_name': d['class'],
+                        'class': d['class'],
+                        'confidence': d['confidence'],
+                        'bbox': d['bbox']
+                    })
+                # Pick best detection for crop
+                best_det = max(detections, key=lambda x: x['confidence'])
+                cropped_image = crop_pil_image(base_image, best_det['bbox'])
+                print(f"DEBUG: YOLO auto-cropped using best detection '{best_det['class']}' with confidence {best_det['confidence']:.4f}")
+            else:
+                print("DEBUG: YOLO detected no objects")
+                
+        # 3. Perform primary search using cropped image (or full image if crop wasn't possible)
+        query_image = cropped_image if cropped_image is not None else base_image
+        query_embedding = get_image_embedding(query_image)
+        search_points = _search_qdrant(client, query_embedding.tolist(), top_k, score_threshold)
+        results = _format_search_results(search_points)
         
-        print(f"DEBUG: Returning {len(results)} formatted results")
-        return results
+        # 4. Fallback Mechanism:
+        # If we used a cropped image and the highest similarity score is < 0.68,
+        # perform a secondary search using the full image and select the stronger set of results.
+        max_score = max([r['similarity_score'] for r in results]) if results else 0.0
+        
+        if cropped_image is not None and max_score < 0.68:
+            print(f"DEBUG: Crop match is weak (max score: {max_score:.4f} < 0.68). Performing full-image fallback search...")
+            fallback_embedding = get_image_embedding(base_image)
+            fallback_points = _search_qdrant(client, fallback_embedding.tolist(), top_k, score_threshold)
+            fallback_results = _format_search_results(fallback_points)
+            
+            fallback_max_score = max([r['similarity_score'] for r in fallback_results]) if fallback_results else 0.0
+            
+            if fallback_max_score > max_score:
+                print(f"DEBUG: Full-image fallback results are stronger (max score: {fallback_max_score:.4f} > {max_score:.4f}). Choosing fallback.")
+                results = fallback_results
+            else:
+                print(f"DEBUG: Cropped results remain stronger ({max_score:.4f} >= {fallback_max_score:.4f}). Keeping crop.")
+                
+        print(f"DEBUG: Returning {len(results)} search results and {len(yolo_detections)} detections")
+        return results, yolo_detections
+    except Exception as e:
+        print(f"Error searching images: {str(e)}")
+        return [], []
     
     except Exception as e:
         print(f"Error searching images: {str(e)}")

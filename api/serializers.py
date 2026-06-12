@@ -94,6 +94,8 @@ class InventorySerializer(serializers.ModelSerializer):
     salePrice = serializers.SerializerMethodField()
     supplierName = serializers.SerializerMethodField()
     productImage = serializers.SerializerMethodField()
+    categoryName = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Inventory
@@ -109,7 +111,9 @@ class InventorySerializer(serializers.ModelSerializer):
             'costPrice',
             'salePrice',
             'supplierName',
-            'productImage'
+            'productImage',
+            'categoryName',
+            'status'
         ]
 
     def get_productName(self, obj):
@@ -129,6 +133,12 @@ class InventorySerializer(serializers.ModelSerializer):
 
     def get_productImage(self, obj):
         return obj.product.image if obj.product else None
+
+    def get_categoryName(self, obj):
+        return obj.product.subcategory.category.name if obj.product and obj.product.subcategory and obj.product.subcategory.category else None
+
+    def get_status(self, obj):
+        return obj.product.status if obj.product else 'Active'
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)

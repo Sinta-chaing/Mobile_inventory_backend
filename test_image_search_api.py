@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class ImageSearchAPITester:
     """Test Image Search API endpoints"""
     
-    def __init__(self, base_url: str = "https://vuthserver.tailf87741.ts.net/", token: Optional[str] = None):
+    def __init__(self, base_url: str = "http://127.0.0.1:8000/", token: Optional[str] = None):
         self.base_url = base_url.rstrip('/')
         self.token = token
         self.session = requests.Session()
@@ -175,7 +175,7 @@ def main():
     print("=" * 60)
     
     # Configuration
-    base_url = "https://vuthserver.tailf87741.ts.net/"
+    base_url = "http://127.0.0.1:8000/"
     token = None  # Set this to your actual token for authenticated tests
     
     print(f"\nBase URL: {base_url}")

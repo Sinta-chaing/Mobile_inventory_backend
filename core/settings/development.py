@@ -10,7 +10,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-z(!23$5v6=s&71+ty_em-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'vuthserver.tailf87741.ts.net', '100.94.77.119']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '100.94.77.119']
 
 # To allow all
 CORS_ALLOW_ALL_ORIGINS = True
@@ -23,14 +23,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3001",
     "http://100.94.77.119:3000",
     "http://192.168.1.223:3000",
-    "https://ochlocratical-braelynn-nonrefractively.ngrok-free.dev",
-    "https://vuthserver.tailf87741.ts.net"
+    "https://ochlocratical-braelynn-nonrefractively.ngrok-free.dev"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
-    'https://vuthserver.tailf87741.ts.net',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
 ]
 
 # Additional
