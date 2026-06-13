@@ -321,6 +321,19 @@ def log_user_deletion(sender, instance, **kwargs):
     )
 
 
+@receiver(pre_save, sender=Product)
+def store_original_product_image(sender, instance, **kwargs):
+    """Store the original image path to detect if it changes."""
+    if instance.pk:
+        try:
+            orig = Product.objects.get(pk=instance.pk)
+            instance._original_image = orig.image
+        except Product.DoesNotExist:
+            instance._original_image = None
+    else:
+        instance._original_image = None
+
+
 @receiver(post_save, sender=Product)
 def auto_index_product_image(sender, instance, created, **kwargs):
     """
@@ -334,6 +347,12 @@ def auto_index_product_image(sender, instance, created, **kwargs):
         # Only process if product has an image
         if not instance.image or instance.image.strip() == '':
             logger.info(f"Skipping indexing for Product(id={instance.productId}): No image")
+            return
+        
+        # Only process if created or if the image has changed
+        original_image = getattr(instance, '_original_image', None)
+        if not created and original_image == instance.image:
+            logger.info(f"Skipping indexing for Product(id={instance.productId}): Image did not change")
             return
         
         from .image_search_service import index_product_image
