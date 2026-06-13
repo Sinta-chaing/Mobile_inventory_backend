@@ -193,10 +193,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         if invoice.paymentMethod == 'KHQR' and invoice.status == 'Pending':
             try:
                 khqr_service = KHQRService()
+                profile = getattr(invoice.createdByUser, 'profile', None)
+                merchant_label = getattr(profile, 'businessName', '') or khqr_service.merchant_name
+                phone_number = invoice.customerPhone or getattr(profile, 'businessPhone', '') or ''
                 qr_data = khqr_service.generate_qr_code(
                     invoice_id=invoice.invoiceId,
                     amount=invoice.grandTotal,
-                    currency='USD'  # You can make this dynamic based on your needs
+                    currency='USD',
+                    store_label=merchant_label,
+                    phone_number=phone_number,
                 )
                 
                 if qr_data:
@@ -233,12 +238,15 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # If QR code already exists, return it instead of regenerating
+        # Prefer a previously generated KHQR if one already exists.
+        # This avoids silently replacing a known-good static QR with a different payload.
         if invoice.khqrCodeString and invoice.khqrMd5:
-            logger.info(f"Using existing QR code for invoice #{invoice.invoiceId}")
+            logger.info(f"Using existing KHQR for invoice #{invoice.invoiceId}")
+            qr_image = KHQRService().generate_qr_image(invoice.khqrCodeString)
             return Response({
                 'success': True,
                 'qr_string': invoice.khqrCodeString,
+                'qr_image': qr_image,
                 'md5_hash': invoice.khqrMd5,
                 'deeplink': invoice.khqrDeeplink or '',
                 'amount': float(invoice.grandTotal),
@@ -258,14 +266,16 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             
             logger.info(f"Generating NEW KHQR for invoice #{invoice.invoiceId}, amount: {invoice.grandTotal}")
             
-            # Convert USD to KHR if needed (1 USD ≈ 4000 KHR)
-            # Bakong typically uses KHR currency
-            amount_khr = float(invoice.grandTotal) * 4000
+            profile = getattr(invoice.createdByUser, 'profile', None)
+            merchant_label = getattr(profile, 'businessName', '') or khqr_service.merchant_name
+            phone_number = invoice.customerPhone or getattr(profile, 'businessPhone', '') or ''
             
             qr_data = khqr_service.generate_qr_code(
                 invoice_id=invoice.invoiceId,
-                amount=amount_khr,
-                currency='KHR'
+                amount=invoice.grandTotal,
+                currency='USD',
+                store_label=merchant_label,
+                phone_number=phone_number,
             )
             
             if not qr_data:

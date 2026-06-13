@@ -10,7 +10,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-z(!23$5v6=s&71+ty_em-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '100.94.77.119']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '100.94.77.119', '10.0.2.2', '10.1.75.188']
 
 # To allow all
 CORS_ALLOW_ALL_ORIGINS = True

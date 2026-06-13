@@ -66,14 +66,19 @@ class SourceSerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     subcategoryName = serializers.SerializerMethodField()
+    categoryName = serializers.SerializerMethodField()
     
     class Meta:
         model = Product
-        fields = ['productId', 'productName', 'description', 'image', 'skuCode', 'unit', 'costPrice', 'salePrice', 'discount', 'status', 'subcategory', 'subcategoryName', 'source', 'createdAt']
+        fields = ['productId', 'productName', 'description', 'image', 'skuCode', 'unit', 'costPrice', 'salePrice', 'discount', 'status', 'subcategory', 'subcategoryName', 'categoryName', 'source', 'createdAt']
     
     def get_subcategoryName(self, obj):
         """Return the subcategory name"""
         return obj.subcategory.name if obj.subcategory else None
+
+    def get_categoryName(self, obj):
+        """Return the category name"""
+        return obj.subcategory.category.name if obj.subcategory and obj.subcategory.category else None
     
     def to_representation(self, instance):
         """Hide costPrice from staff users"""
@@ -95,6 +100,7 @@ class InventorySerializer(serializers.ModelSerializer):
     supplierName = serializers.SerializerMethodField()
     productImage = serializers.SerializerMethodField()
     categoryName = serializers.SerializerMethodField()
+    subcategoryName = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
 
     class Meta:
@@ -113,6 +119,7 @@ class InventorySerializer(serializers.ModelSerializer):
             'supplierName',
             'productImage',
             'categoryName',
+            'subcategoryName',
             'status'
         ]
 
@@ -136,6 +143,9 @@ class InventorySerializer(serializers.ModelSerializer):
 
     def get_categoryName(self, obj):
         return obj.product.subcategory.category.name if obj.product and obj.product.subcategory and obj.product.subcategory.category else None
+
+    def get_subcategoryName(self, obj):
+        return obj.product.subcategory.name if obj.product and obj.product.subcategory else None
 
     def get_status(self, obj):
         return obj.product.status if obj.product else 'Active'

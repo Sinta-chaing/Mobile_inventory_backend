@@ -211,10 +211,10 @@ def initialize_qdrant(auto_index=True):
                 from qdrant_client.models import VectorParams, Distance
                 _client_instance.recreate_collection(
                     collection_name=COLLECTION_NAME,
-                    vectors_config={
-                        "size": VECTOR_SIZE,
-                        "distance": Distance.COSINE
-                    }
+                    vectors_config=VectorParams(
+                        size=VECTOR_SIZE,
+                        distance=Distance.COSINE
+                    )
                 )
                 points_count = 0
             else:
@@ -233,12 +233,13 @@ def initialize_qdrant(auto_index=True):
             # Collection doesn't exist, create it
             if not _skip_auto_index:
                 print(f"Creating new collection: {str(e)}")
+            from qdrant_client.models import VectorParams, Distance
             _client_instance.recreate_collection(
                 collection_name=COLLECTION_NAME,
-                vectors_config={
-                    "size": VECTOR_SIZE,
-                    "distance": Distance.COSINE
-                }
+                vectors_config=VectorParams(
+                    size=VECTOR_SIZE,
+                    distance=Distance.COSINE
+                )
             )
             # Auto-index after creation if enabled and not already doing so
             if auto_index and not _skip_auto_index and not _is_auto_indexing:
@@ -360,6 +361,7 @@ def _search_qdrant(client, query_vector, top_k, score_threshold):
         List of ScoredPoint objects with payload
     """
     try:
+        # query_points is the unified API method in qdrant-client >= 1.16.0
         response = client.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
@@ -367,7 +369,7 @@ def _search_qdrant(client, query_vector, top_k, score_threshold):
             score_threshold=score_threshold,
             with_payload=True,
         )
-        return response.points if response and hasattr(response, 'points') else []
+        return response.points if (response and hasattr(response, 'points')) else []
         
     except Exception as e:
         print(f"Error searching Qdrant: {str(e)}")
@@ -490,9 +492,10 @@ def search_similar_images(
         # 4. Fallback Mechanism:
         # If we used a cropped image and the highest similarity score is < 0.68,
         # perform a secondary search using the full image and select the stronger set of results.
+        # Fallback is only triggered for automatic crops (crop_rect is None), not user manual crops.
         max_score = max([r['similarity_score'] for r in results]) if results else 0.0
         
-        if cropped_image is not None and max_score < 0.68:
+        if crop_rect is None and cropped_image is not None and max_score < 0.68:
             print(f"DEBUG: Crop match is weak (max score: {max_score:.4f} < 0.68). Performing full-image fallback search...")
             fallback_embedding = get_image_embedding(base_image)
             fallback_points = _search_qdrant(client, fallback_embedding.tolist(), top_k, score_threshold)

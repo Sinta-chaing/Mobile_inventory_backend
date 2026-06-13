@@ -5,11 +5,19 @@ Handles Bakong KHQR API integration for payment processing
 import requests
 import hashlib
 import logging
+import base64
+from io import BytesIO
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Dict, Any
 from django.conf import settings
 from bakong_khqr import KHQR
+
+try:
+    import qrcode
+    QRCODE_AVAILABLE = True
+except ImportError:
+    QRCODE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +36,14 @@ class KHQRService:
         self.app_name = getattr(settings, 'KHQR_APP_NAME', '')
         self.app_deeplink_callback = getattr(settings, 'KHQR_APP_DEEPLINK_CALLBACK', '')
         self._access_token = None
+
+    def _sanitize_khqr_text(self, value: str, fallback: str = '', max_length: int = 25) -> str:
+        """Normalize label text to a conservative KHQR-safe form."""
+        cleaned = ''.join(ch for ch in str(value).strip() if ch.isalnum() or ch in ' ._-')
+        cleaned = ' '.join(cleaned.split())
+        if not cleaned:
+            cleaned = fallback
+        return cleaned[:max_length]
     
     def get_access_token(self) -> Optional[str]:
         """
@@ -73,7 +89,9 @@ class KHQRService:
         self,
         invoice_id: int,
         amount: Decimal,
-        currency: str = 'USD'
+        currency: str = 'USD',
+        store_label: str | None = None,
+        phone_number: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Generate KHQR QR code for an invoice
@@ -100,29 +118,42 @@ class KHQRService:
             logger.info(f"Using bakong_account_id: {self.bakong_account_id}")
             logger.info(f"Using merchant_name: {self.merchant_name}")
             logger.info(f"Using merchant_city: {self.merchant_city}")
+
+            currency_code = (currency or 'USD').upper()
+            if currency_code == 'KHR':
+                amount_value = int(Decimal(str(amount)).quantize(Decimal('1')))
+            else:
+                amount_value = float(Decimal(str(amount)).quantize(Decimal('0.01')))
+
+            merchant_name = self._sanitize_khqr_text(self.merchant_name, fallback='Merchant')
+            merchant_city = self._sanitize_khqr_text(self.merchant_city or 'Phnom Penh', fallback='Phnom Penh')
             
-            # Initialize KHQR instance
-            khqr = KHQR()
+            # Initialize KHQR in a way that works across package versions.
+            try:
+                khqr = KHQR(self.bakong_token) if self.bakong_token else KHQR()
+            except TypeError:
+                khqr = KHQR()
             
-            # Create QR code data (dynamic)
+            # Generate simplified KHQR - use amount with merchant info only (no invoice details).
+            # Bakong format validation rejects complex invoice structures as [MAPP-KHQR-INV-FORMAT].
+            # Try the simplest valid format that Bakong accepts.
             qr_data = khqr.create_qr(
                 bank_account=self.bakong_account_id,
-                merchant_name=self.merchant_name,
-                merchant_city=self.merchant_city or "Phnom Penh",
-                amount=float(amount),
-                currency=currency,
-                store_label=f"Invoice #{invoice_id}",
-                phone_number="",  # Optional - can be empty string
-                bill_number=str(invoice_id),
-                terminal_label=f"INV{invoice_id}"
+                merchant_name=merchant_name,
+                merchant_city=merchant_city,
+                amount=amount_value,
+                currency=currency_code,
+                store_label='',
+                phone_number='',
+                bill_number='',
+                terminal_label='',
             )
-            
-            # The qr_data returned is already a QR string
             qr_string = qr_data if isinstance(qr_data, str) else str(qr_data)
             
-            # Calculate MD5 hash
-            import hashlib
+            # Calculate MD5 hash locally to avoid package-version differences.
             md5_hash = hashlib.md5(qr_string.encode('utf-8')).hexdigest()
+
+            qr_image = self.generate_qr_image(qr_string)
             
             logger.info(f"Generated KHQR QR code for invoice #{invoice_id}, MD5: {md5_hash}")
             
@@ -138,6 +169,7 @@ class KHQRService:
             
             return {
                 'qr_string': qr_string,
+                'qr_image': qr_image,
                 'md5_hash': md5_hash,
                 'amount': float(amount),
                 'currency': currency,
@@ -148,6 +180,39 @@ class KHQRService:
             import traceback
             logger.error(traceback.format_exc())
             return None
+
+    def generate_qr_image(self, qr_string: str) -> Optional[str]:
+        """Generate a canonical KHQR image from a QR string using standard library."""
+        # Use qrcode library for reliable, scannable image generation
+        if QRCODE_AVAILABLE:
+            try:
+                qr = qrcode.QRCode(
+                    version=None,  # Auto-detect version
+                    error_correction=qrcode.constants.ERROR_CORRECT_H,  # High error correction
+                    box_size=10,
+                    border=4,
+                )
+                qr.add_data(qr_string)
+                qr.make(fit=True)
+                
+                # Generate PIL image
+                img = qr.make_image(fill_color="black", back_color="white")
+                
+                # Convert to base64 data URI
+                buffer = BytesIO()
+                img.save(buffer, format="PNG")
+                img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                data_uri = f"data:image/png;base64,{img_base64}"
+                
+                logger.info("Generated QR image using qrcode library")
+                return data_uri
+            except Exception as e:
+                logger.warning(f"qrcode library generation failed: {e}")
+                return None
+        
+        # If qrcode library not available, log and return None
+        logger.debug("qrcode library not available, QR image generation skipped")
+        return None
     
     def generate_deeplink(self, qr_string: str) -> Optional[str]:
         """
