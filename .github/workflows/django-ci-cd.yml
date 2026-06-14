@@ -3,50 +3,62 @@ name: Django CI/CD with Docker
 on:
   push:
     branches:
-      - master        
+      - master
+      # - stage
+      - production
+    tags:
+      - 'v*'
+
   pull_request:
     branches:
-      - master        
+      - master
+      # - stage
+      - production
+
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    
     services:
       postgres:
         image: postgres:15
         env:
+          POSTGRES_DB: test_db
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: vuth123321
-          POSTGRES_DB: InventoryV2
+          POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d InventoryV2"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     env:
-      DATABASE_URL: postgres://postgres:vuth123321@localhost:5432/InventoryV2
+      DB_NAME: test_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DJANGO_SETTINGS_MODULE: core.settings
 
     steps:
       - uses: actions/checkout@v3
 
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - run: python manage.py migrate
-      - run: python manage.py test
 
-  docker:
+      - name: Run pytest
+        run: pytest
+
+
+  docker_build:
     runs-on: ubuntu-latest
     needs: test
+
     steps:
       - uses: actions/checkout@v3
 
@@ -56,10 +68,52 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker image
+      # ---------------- DEV ----------------
+      - name: Build and push dev (master)
+        if: github.ref == 'refs/heads/master'
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/django-inventory:latest .
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:dev .
+          docker push ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:dev
 
-      - name: Push Docker image
+      # # ---------------- STAGING ----------------
+      # - name: Build and push staging
+      #   if: github.ref == 'refs/heads/stage'
+      #   run: |
+      #     docker build -t ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:staging .
+      #     docker push ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:staging
+
+      # ---------------- PRODUCTION ----------------
+      - name: Build and push production
+        # if: github.ref == 'refs/heads/production'
         run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/django-inventory:latest
+
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:latest .
+          docker push ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:latest
+  # deploy:
+  #   runs-on: self-hosted
+  #   needs: docker_build
+
+  #   steps:
+  #     - name: Deploy latest container
+  #       run: |
+  #         docker pull ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:latest
+
+  #         docker stop inventory || true
+  #         docker rm inventory || true
+
+  #         # 1. run initialization FIRST
+  #         docker run --rm \
+  #           --env-file /home/vuth/inventory/.env \
+  #           -v /home/vuth/inventory/media:/app/media \
+  #           -v /home/vuth/inventory/qdrant_storage:/app/qdrant_storage \
+  #           ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:latest \
+  #           python manage.py initialize_image_search
+
+  #         # 2. then start server
+  #         docker run -d \
+  #           --name inventory \
+  #           -p 8000:8000 \
+  #           --env-file /home/vuth/inventory/.env \
+  #           -v /home/vuth/inventory/media:/app/media \
+  #           -v /home/vuth/inventory/qdrant_storage:/app/qdrant_storage \
+  #           ${{ secrets.DOCKER_USERNAME }}/django-inventory-mobile:latest
