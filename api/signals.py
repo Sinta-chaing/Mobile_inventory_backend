@@ -15,61 +15,61 @@ logger = logging.getLogger(__name__)
 _model_previous_states = {}
 _invoice_previous_status = {}
 
-@receiver(post_save, sender=Invoice)
-def calculate_product_associations(sender, instance, created, **kwargs):
-    """
-    Calculate product associations when an invoice is created/updated.
-    This tracks which products are frequently bought together and calculates association percentage.
-    """
-    if instance.status in ['Paid', 'Pending']:  # Only track completed or pending invoices
-        purchases = instance.purchases.filter(product__isnull=False).select_related('product')
-        # Get unique products to avoid counting the same pair multiple times if same product appears multiple times
-        products = list(set(p.product for p in purchases))
-        
-        if len(products) < 2:  # Need at least 2 products to create associations
-            return
-        
-        # Create associations for each pair of products
-        for i, product1 in enumerate(products):
-            for product2 in products[i+1:]:  # Avoid duplicates and self-associations
-                # Create or update the association in both directions
-                for prod_a, prod_b in [(product1, product2), (product2, product1)]:
-                    association, _ = ProductAssociation.objects.get_or_create(
-                        product1=prod_a,
-                        product2=prod_b,
-                        defaults={'frequency': 1, 'totalProduct1Purchases': 0}
-                    )
-                    
-                    if not _:  # If association already exists, increment frequency
-                        association.frequency += 1
-                        association.save()
-        
-        # Recalculate association percentages for all affected products
-        all_products_in_invoice = set(products)
-        for product in all_products_in_invoice:
-            update_association_percentages(product)
-
-
-def update_association_percentages(product):
-    """
-    Recalculate association percentages for a given product.
-    Association percentage = (times product A and B bought together) / (total times product A purchased)
-    Capped at 100% maximum to prevent invalid percentages.
-    """
-    # Count total purchases for this product
-    total_purchases = Purchase.objects.filter(product=product, invoice__status__in=['Paid', 'Pending']).count()
-    
-    if total_purchases == 0:
-        return
-    
-    # Update all associations for this product
-    associations = ProductAssociation.objects.filter(product1=product)
-    for association in associations:
-        association.totalProduct1Purchases = total_purchases
-        # Cap the percentage at 100% to prevent exceeding 100%
-        percentage = min((association.frequency / total_purchases) * 100, 100.0)
-        association.associationPercentage = percentage
-        association.save(update_fields=['totalProduct1Purchases', 'associationPercentage'])
+# @receiver(post_save, sender=Invoice)
+# def calculate_product_associations(sender, instance, created, **kwargs):
+#     """
+#     Calculate product associations when an invoice is created/updated.
+#     This tracks which products are frequently bought together and calculates association percentage.
+#     """
+#     if instance.status in ['Paid', 'Pending']:  # Only track completed or pending invoices
+#         purchases = instance.purchases.filter(product__isnull=False).select_related('product')
+#         # Get unique products to avoid counting the same pair multiple times if same product appears multiple times
+#         products = list(set(p.product for p in purchases))
+#         
+#         if len(products) < 2:  # Need at least 2 products to create associations
+#             return
+#         
+#         # Create associations for each pair of products
+#         for i, product1 in enumerate(products):
+#             for product2 in products[i+1:]:  # Avoid duplicates and self-associations
+#                 # Create or update the association in both directions
+#                 for prod_a, prod_b in [(product1, product2), (product2, product1)]:
+#                     association, _ = ProductAssociation.objects.get_or_create(
+#                         product1=prod_a,
+#                         product2=prod_b,
+#                         defaults={'frequency': 1, 'totalProduct1Purchases': 0}
+#                     )
+#                     
+#                     if not _:  # If association already exists, increment frequency
+#                         association.frequency += 1
+#                         association.save()
+#         
+#         # Recalculate association percentages for all affected products
+#         all_products_in_invoice = set(products)
+#         for product in all_products_in_invoice:
+#             update_association_percentages(product)
+# 
+# 
+# def update_association_percentages(product):
+#     """
+#     Recalculate association percentages for a given product.
+#     Association percentage = (times product A and B bought together) / (total times product A purchased)
+#     Capped at 100% maximum to prevent invalid percentages.
+#     """
+#     # Count total purchases for this product
+#     total_purchases = Purchase.objects.filter(product=product, invoice__status__in=['Paid', 'Pending']).count()
+#     
+#     if total_purchases == 0:
+#         return
+#     
+#     # Update all associations for this product
+#     associations = ProductAssociation.objects.filter(product1=product)
+#     for association in associations:
+#         association.totalProduct1Purchases = total_purchases
+#         # Cap the percentage at 100% to prevent exceeding 100%
+#         percentage = min((association.frequency / total_purchases) * 100, 100.0)
+#         association.associationPercentage = percentage
+#         association.save(update_fields=['totalProduct1Purchases', 'associationPercentage'])
 
 @receiver(post_save, sender=Purchase)
 def update_inventory_on_purchase(sender, instance, created, **kwargs):
@@ -321,6 +321,19 @@ def log_user_deletion(sender, instance, **kwargs):
     )
 
 
+@receiver(pre_save, sender=Product)
+def store_original_product_image(sender, instance, **kwargs):
+    """Store the original image path to detect if it changes."""
+    if instance.pk:
+        try:
+            orig = Product.objects.get(pk=instance.pk)
+            instance._original_image = orig.image
+        except Product.DoesNotExist:
+            instance._original_image = None
+    else:
+        instance._original_image = None
+
+
 @receiver(post_save, sender=Product)
 def auto_index_product_image(sender, instance, created, **kwargs):
     """
@@ -334,6 +347,12 @@ def auto_index_product_image(sender, instance, created, **kwargs):
         # Only process if product has an image
         if not instance.image or instance.image.strip() == '':
             logger.info(f"Skipping indexing for Product(id={instance.productId}): No image")
+            return
+        
+        # Only process if created or if the image has changed
+        original_image = getattr(instance, '_original_image', None)
+        if not created and original_image == instance.image:
+            logger.info(f"Skipping indexing for Product(id={instance.productId}): Image did not change")
             return
         
         from .image_search_service import index_product_image

@@ -69,6 +69,17 @@ def search_products_by_image(request):
         top_k = int(request.data.get('top_k', 10))
         score_threshold = float(request.data.get('score_threshold', 0.3))  # Lowered from 0.5
         
+        # Parse crop coordinates if provided
+        crop_json = request.data.get('crop')
+        crop_rect = None
+        if crop_json:
+            try:
+                import json
+                crop_rect = json.loads(crop_json)
+                logger.info(f"Received crop rect: {crop_rect}")
+            except Exception as e:
+                logger.error(f"Failed to parse crop JSON: {e}")
+                
         # Validate parameters
         top_k = max(1, min(top_k, 50))  # Limit to 1-50
         score_threshold = max(0.0, min(score_threshold, 1.0))
@@ -76,18 +87,20 @@ def search_products_by_image(request):
         logger.info(f"Search parameters: top_k={top_k}, score_threshold={score_threshold}")
         
         # Search for similar images
-        results = search_similar_images(
+        results, detections = search_similar_images(
             image_file,
             top_k=top_k,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            crop_rect=crop_rect
         )
         
-        logger.info(f"Search returned {len(results)} results")
+        logger.info(f"Search returned {len(results)} results, {len(detections)} detections")
         
         return Response({
             'success': True,
             'results': results,
             'count': len(results),
+            'detections': detections,
             'parameters': {
                 'top_k': top_k,
                 'score_threshold': score_threshold
@@ -130,21 +143,33 @@ def search_products_by_url(request):
         top_k = int(request.query_params.get('top_k', 10))
         score_threshold = float(request.query_params.get('score_threshold', 0.5))
         
+        # Parse crop coordinates if provided
+        crop_json = request.query_params.get('crop')
+        crop_rect = None
+        if crop_json:
+            try:
+                import json
+                crop_rect = json.loads(crop_json)
+            except Exception as e:
+                pass
+                
         # Validate parameters
         top_k = max(1, min(top_k, 50))
         score_threshold = max(0.0, min(score_threshold, 1.0))
         
         # Search for similar images
-        results = search_similar_images(
+        results, detections = search_similar_images(
             image_url,
             top_k=top_k,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            crop_rect=crop_rect
         )
         
         return Response({
             'success': True,
             'results': results,
             'count': len(results),
+            'detections': detections,
             'parameters': {
                 'image_url': image_url,
                 'top_k': top_k,

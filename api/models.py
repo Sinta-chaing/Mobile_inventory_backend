@@ -190,13 +190,24 @@ class Invoice(models.Model):
             from datetime import datetime
             current_year = datetime.now().year
             
-            # Count invoices created in current year
-            invoices_this_year = Invoice.objects.filter(
-                createdAt__year=current_year
-            ).count()
+            # Find the highest sequence number in the database for the current year
+            year_prefix = f"INV-{current_year}-"
+            invoice_numbers = Invoice.objects.filter(
+                invoiceNumber__startswith=year_prefix
+            ).values_list('invoiceNumber', flat=True)
             
-            # Generate format: INV-YYYY-NNN (e.g., INV-2025-001)
-            sequence_number = invoices_this_year + 1
+            max_seq = 0
+            for num in invoice_numbers:
+                try:
+                    parts = num.split('-')
+                    if len(parts) == 3:
+                        seq = int(parts[2])
+                        if seq > max_seq:
+                            max_seq = seq
+                except (ValueError, IndexError):
+                    continue
+            
+            sequence_number = max_seq + 1
             self.invoiceNumber = f"INV-{current_year}-{sequence_number:03d}"
         
         super().save(*args, **kwargs)

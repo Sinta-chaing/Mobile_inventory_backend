@@ -6,6 +6,7 @@ Shared by development and production.
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -60,16 +61,24 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 # Database configuration from environment variables
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'InventoryV2'),
-        'USER': os.environ.get('DB_USER', 'postgres'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', 'vuth123321'),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),
-        'PORT': os.environ.get('DB_PORT', '5432'),
+if os.environ.get('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=os.environ.get('DATABASE_URL'),
+            conn_max_age=600
+        )
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('DB_NAME', 'InventoryV2'),
+            'USER': os.environ.get('DB_USER', 'postgres'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', 'vuth123321'),
+            'HOST': os.environ.get('DB_HOST', 'localhost'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+        }
+    }
 
 AUTH_USER_MODEL = 'api.User'
 
@@ -131,6 +140,6 @@ KHQR_APP_DEEPLINK_CALLBACK = os.environ.get('KHQR_APP_DEEPLINK_CALLBACK', '')
 # Image Search Configuration (Integrated in Backend)
 IMAGE_SEARCH_QDRANT_PATH = os.environ.get('IMAGE_SEARCH_QDRANT_PATH', BASE_DIR / 'qdrant_storage')
 IMAGE_SEARCH_COLLECTION_NAME = os.environ.get('IMAGE_SEARCH_COLLECTION_NAME', 'inventory_products')
-IMAGE_SEARCH_YOLO_MODEL = os.environ.get('IMAGE_SEARCH_YOLO_MODEL', 'yolov8n.pt')
+IMAGE_SEARCH_YOLO_MODEL = os.environ.get('IMAGE_SEARCH_YOLO_MODEL', 'yolo26l.pt')
 IMAGE_SEARCH_EMBEDDING_MODEL = os.environ.get('IMAGE_SEARCH_EMBEDDING_MODEL', 'clip-ViT-B-32')
 IMAGE_SEARCH_DETECTION_CONFIDENCE = float(os.environ.get('IMAGE_SEARCH_DETECTION_CONFIDENCE', '0.25'))

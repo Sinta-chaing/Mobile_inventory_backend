@@ -109,7 +109,7 @@ try:
             
             # Try different thresholds
             for threshold in [0.0, 0.1, 0.3]:
-                results = search_similar_images(test_image_path, top_k=5, score_threshold=threshold)
+                results, detections = search_similar_images(test_image_path, top_k=5, score_threshold=threshold)
                 print(f"✓ Query with threshold={threshold}: Found {len(results)} results")
                 if results:
                     for i, result in enumerate(results[:2], 1):
